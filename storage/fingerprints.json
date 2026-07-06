@@ -1,0 +1,54 @@
+[
+  {
+    "id": "016d4ecc-6927-4839-830b-ad992cecee1e",
+    "song": "Imagine",
+    "artist": "John Lennon",
+    "fingerprint": {
+      "method": "test",
+      "hash": "Imagine_John Lennon"
+    },
+    "duration": 183.0,
+    "audio_file": null,
+    "created_at": "2026-04-23T12:28:22.134114Z",
+    "url": null
+  },
+  {
+    "id": "c80d9ffd-6ffa-442a-b121-7bd8cf7a1512",
+    "song": "Stairway to Heaven",
+    "artist": "Led Zeppelin",
+    "fingerprint": {
+      "method": "test",
+      "hash": "Stairway to Heaven_Led Zeppelin"
+    },
+    "duration": 482.0,
+    "audio_file": null,
+    "created_at": "2026-04-23T12:28:22.134136Z",
+    "url": null
+  },
+  {
+    "id": "227527db-ae56-402d-af6d-0150eb913f1b",
+    "song": "Hotel California",
+    "artist": "Eagles",
+    "fingerprint": {
+      "method": "test",
+      "hash": "Hotel California_Eagles"
+    },
+    "duration": 391.0,
+    "audio_file": null,
+    "created_at": "2026-04-23T12:28:22.134143Z",
+    "url": null
+  },
+  {
+    "id": "b1007b50-fc56-4c73-b301-0463a5d350d8",
+    "song": "Bohemian Rhapsody",
+    "artist": "Queen",
+    "fingerprint": {
+      "method": "chromaprint",
+      "hash": "test123abc"
+    },
+    "duration": 354.5,
+    "audio_file": null,
+    "created_at": "2026-04-23T12:28:22.134147Z",
+    "url": null
+  }
+]

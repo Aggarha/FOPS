@@ -1,0 +1,19 @@
+*.db
+credentials.json
+cookies/
+venv/
+__pycache__/
+uploads/
+node_modules/
+.env
+
+# Additional safety ignores
+.env.*
+.next/
+*.sqlite
+*.sqlite3
+*.log
+.pytest_cache/
+coverage/
+dist/
+build/

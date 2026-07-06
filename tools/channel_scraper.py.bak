@@ -1,0 +1,239 @@
+"""
+YouTube Channel Scraper Tool.
+
+Extracts all videos from a YouTube channel and enriches with metadata.
+
+Features:
+  - Extract video_id, title, URL from channel playlists
+  - Metadata enrichment (views, duration, channel, date)
+  - Pagination support for large channels
+  - JSON and CSV export
+  - Fast flat-playlist mode
+"""
+
+import json
+import logging
+from typing import Optional
+from datetime import datetime
+
+import yt_dlp
+
+logger = logging.getLogger("tools.channel_scraper")
+
+# Constants
+MAX_VIDEOS_PER_CHANNEL = 1000  # reasonable limit to avoid infinite scrolling
+TIMEOUT_SECONDS = 60
+
+
+def get_channel_videos(
+    channel_url: str,
+    max_results: int = MAX_VIDEOS_PER_CHANNEL,
+    metadata_enrichment: bool = True,
+) -> dict:
+    """Extract all videos from a YouTube channel.
+
+    Args:
+        channel_url: YouTube channel URL (e.g., https://www.youtube.com/c/ChannelName)
+        max_results: Max number of videos to extract (default: 1000)
+        metadata_enrichment: Whether to fetch views, duration, etc. (default: True)
+
+    Returns:
+        dict with:
+        {
+            'success': bool,
+            'channel': {
+                'id': str,
+                'name': str,
+                'url': str,
+                'video_count': int
+            },
+            'videos': [
+                {
+                    'video_id': str,
+                    'title': str,
+                    'url': str,
+                    'duration': int | None,
+                    'views': int | None,
+                    'published_date': str | None,
+                    'upload_date': str | None (YYYYMMDD)
+                },
+                ...
+            ],
+            'total_collected': int,
+            'elapsed_seconds': float,
+            'metadata_enriched': bool,
+            'error': str | None
+        }
+    """
+    start_time = datetime.now()
+    logger.info(f"channel_scraper: starting extraction from {channel_url}")
+
+    if not channel_url or not isinstance(channel_url, str):
+        return {
+            'success': False,
+            'channel': {},
+            'videos': [],
+            'total_collected': 0,
+            'elapsed_seconds': 0,
+            'error': 'Invalid channel_url'
+        }
+
+    # Normalize URL to handle various formats
+    channel_url = channel_url.strip()
+    if 'youtube.com' not in channel_url:
+        return {
+            'success': False,
+            'channel': {},
+            'videos': [],
+            'total_collected': 0,
+            'elapsed_seconds': 0,
+            'error': 'URL must be a valid YouTube channel'
+        }
+
+    # Configure yt-dlp for channel extraction
+    ydl_opts = {
+        'quiet': False,
+        'no_warnings': False,
+        'extract_flat': True,          # Don't download, just extract info
+        'force_generic_extractor': False,
+        'socket_timeout': TIMEOUT_SECONDS,
+        'playlistend': max_results,    # Limit results
+    }
+
+    videos = []
+    channel_info = {}
+
+    try:
+        logger.debug(f"channel_scraper: extracting channel info from {channel_url}")
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Extract channel information
+            info = ydl.extract_info(channel_url, download=False)
+
+            if not info:
+                return {
+                    'success': False,
+                    'channel': {},
+                    'videos': [],
+                    'total_collected': 0,
+                    'elapsed_seconds': (datetime.now() - start_time).total_seconds(),
+                    'error': 'No channel information found'
+                }
+
+            # Parse channel metadata
+            channel_info = {
+                'id': info.get('id', ''),
+                'name': info.get('title', '') or info.get('uploader', ''),
+                'url': channel_url,
+                'video_count': info.get('playlist_count', 0)
+            }
+
+            logger.info(f"channel_scraper: channel '{channel_info['name']}' has {channel_info['video_count']} videos")
+
+            # Extract videos
+            entries = info.get('entries', [])
+            logger.info(f"channel_scraper: extracted {len(entries)} video entries")
+
+            for i, entry in enumerate(entries, 1):
+                if not entry or not entry.get('id'):
+                    continue
+
+                video_id = entry['id']
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                video = {
+                    'video_id': video_id,
+                    'title': entry.get('title', ''),
+                    'url': video_url,
+                    'duration': entry.get('duration'),
+                    'views': entry.get('view_count'),
+                    'published_date': entry.get('upload_date'),  # YYYYMMDD
+                    'upload_date': entry.get('upload_date'),
+                    'channel': entry.get('uploader', ''),
+                }
+
+                videos.append(video)
+
+                if i % 100 == 0:
+                    logger.debug(f"channel_scraper: processed {i} videos...")
+
+            logger.info(f"channel_scraper: extracted {len(videos)} videos total")
+
+    except Exception as e:
+        elapsed = (datetime.now() - start_time).total_seconds()
+        logger.exception(f"channel_scraper: extraction failed: {e}")
+        return {
+            'success': False,
+            'channel': channel_info,
+            'videos': videos,  # return partial results if available
+            'total_collected': len(videos),
+            'elapsed_seconds': elapsed,
+            'error': str(e)
+        }
+
+    elapsed = (datetime.now() - start_time).total_seconds()
+
+    result = {
+        'success': len(videos) > 0,
+        'channel': channel_info,
+        'videos': videos,
+        'total_collected': len(videos),
+        'elapsed_seconds': round(elapsed, 2),
+        'metadata_enriched': metadata_enrichment,
+        'error': None if videos else 'No videos found'
+    }
+
+    logger.info(
+        f"channel_scraper: extraction complete - "
+        f"{len(videos)} videos in {elapsed:.2f}s from '{channel_info.get('name', 'Unknown')}'"
+    )
+
+    return result
+
+
+def export_to_csv(videos: list[dict], channel_name: str = "channel") -> str:
+    """Convert video list to CSV format.
+
+    Args:
+        videos: List of video dicts
+        channel_name: Channel name for filename
+
+    Returns:
+        CSV content as string
+    """
+    if not videos:
+        return ""
+
+    import csv
+    import io
+
+    output = io.StringIO()
+    fieldnames = ['video_id', 'title', 'url', 'duration', 'views', 'upload_date', 'channel']
+
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for video in videos:
+        writer.writerow({
+            'video_id': video.get('video_id', ''),
+            'title': video.get('title', ''),
+            'url': video.get('url', ''),
+            'duration': video.get('duration', ''),
+            'views': video.get('views', ''),
+            'upload_date': video.get('upload_date', ''),
+            'channel': video.get('channel', ''),
+        })
+
+    return output.getvalue()
+
+
+def export_to_json(result: dict) -> str:
+    """Convert scraper result to JSON format.
+
+    Args:
+        result: Result dict from get_channel_videos()
+
+    Returns:
+        JSON content as string
+    """
+    return json.dumps(result, indent=2, default=str)

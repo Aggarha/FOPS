@@ -1,0 +1,523 @@
+'use client';
+
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { Download, Trash2, Play, Pause, Copy, Upload, Plus } from 'lucide-react';
+
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8001';
+
+interface SongItem {
+  id: string;
+  artist: string;
+  song: string;
+}
+
+interface SearchResult {
+  video_id: string;
+  title: string;
+  url: string;
+  channel: string;
+  views: number;
+  duration: number;
+  score: number;
+  reason: string;
+  published: string;
+}
+
+interface SongSearchResult {
+  song: string;
+  artist: string;
+  results: SearchResult[];
+  total_found: number;
+  unique_results: number;
+  variants_tried: number;
+  error: null | string;
+}
+
+interface JobProgress {
+  stage: string;
+  current: number;
+  total: number;
+  percentage: number;
+  message: string;
+}
+
+interface JobState {
+  id: string;
+  type: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: JobProgress;
+  result: {
+    results: SongSearchResult[];
+    total_songs: number;
+    total_results: number;
+    average_results_per_song: number;
+    duration_seconds: number;
+  } | null;
+  error: string | null;
+}
+
+export default function YouTubeSearchPage() {
+  // Input mode
+  const [inputMode, setInputMode] = useState<'manual' | 'excel'>('manual');
+  
+  // Manual input
+  const [songs, setSongs] = useState<SongItem[]>([
+    { id: '1', artist: '', song: '' }
+  ]);
+  
+  // Excel file
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [excelFileName, setExcelFileName] = useState('');
+  
+  // Job tracking
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobState, setJobState] = useState<JobState | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  
+  // Results
+  const [allResults, setAllResults] = useState<SongSearchResult[]>([]);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  // Poll job progress
+  useEffect(() => {
+    if (!jobId || !isRunning) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/api/jobs/${jobId}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.access_token || ''}` }
+        });
+        if (!res.ok) return;
+
+        const job: JobState = await res.json();
+        setJobState(job);
+
+        // Add log message
+        if (job.progress.message) {
+          setLogs(prev => {
+            const last = prev[prev.length - 1];
+            if (last !== job.progress.message) {
+              return [...prev, `[${new Date().toLocaleTimeString()}] ${job.progress.message}`];
+            }
+            return prev;
+          });
+        }
+
+        // Update results if completed
+        if (job.status === 'completed' && job.result) {
+          setAllResults(job.result.results || []);
+          setIsRunning(false);
+          setLogs(prev => [...prev, '✅ Search complete!']);
+        }
+
+        if (job.status === 'failed') {
+          setIsRunning(false);
+          setLogs(prev => [...prev, `❌ Error: ${job.error}`]);
+        }
+      } catch (e) {
+        console.error('Poll failed:', e);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [jobId, isRunning]);
+
+  // Add song row
+  const addSong = () => {
+    setSongs([...songs, { id: Date.now().toString(), artist: '', song: '' }]);
+  };
+
+  // Remove song row
+  const removeSong = (id: string) => {
+    setSongs(songs.filter(s => s.id !== id));
+  };
+
+  // Update song
+  const updateSong = (id: string, field: 'artist' | 'song', value: string) => {
+    setSongs(songs.map(s => s.id === id ? { ...s, [field]: value } : s));
+  };
+
+  // Handle Excel upload
+  const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setExcelFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        // Simple CSV parsing (for Excel saved as CSV)
+        const text = event.target?.result as string;
+        const lines = text.split('\n');
+        const parsed: SongItem[] = [];
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+
+          const parts = line.split(',');
+          if (parts.length >= 2) {
+            parsed.push({
+              id: `excel-${i}`,
+              artist: parts[0].trim(),
+              song: parts[1].trim()
+            });
+          }
+        }
+
+        if (parsed.length > 0) {
+          setSongs(parsed);
+          setLogs([`📁 Loaded ${parsed.length} songs from Excel`]);
+        }
+      } catch (err) {
+        console.error('Excel parsing failed:', err);
+        alert('Failed to parse Excel file. Use CSV format: Artist,Song');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Start search
+  const startSearch = async () => {
+    const items = songs.filter(s => s.artist.trim() && s.song.trim());
+    if (items.length === 0) {
+      alert('Add at least one song');
+      return;
+    }
+
+    setLogs([]);
+    setAllResults([]);
+    setIsRunning(true);
+    setIsPaused(false);
+
+    try {
+      const res = await fetch(`${API}/api/tools/youtube-search/batch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.access_token || ''}`
+        },
+        body: JSON.stringify({
+          items: items.map(s => ({
+            artist: s.artist,
+            song: s.song
+          })),
+          max_results_per_song: 50
+        })
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json();
+      if (data.success) {
+        setJobId(data.job_id);
+        setLogs([`🚀 Started batch search (Job ID: ${data.job_id})`]);
+      }
+    } catch (e) {
+      setLogs([`❌ Failed to start: ${e}`]);
+      setIsRunning(false);
+    }
+  };
+
+  // Stop search
+  const stopSearch = () => {
+    setIsRunning(false);
+    setLogs(prev => [...prev, '⏹ Search stopped']);
+  };
+
+  // Export results as CSV
+  const exportCSV = () => {
+    const rows: string[] = ['Song,Artist,Title,URL,Channel,Views,Score,Reason'];
+    
+    allResults.forEach(song => {
+      song.results.forEach(result => {
+        const escaped = (s: string) => `"${s.replace(/"/g, '""')}"`;
+        rows.push(
+          `${escaped(song.song)},${escaped(song.artist)},${escaped(result.title)},${result.url},${escaped(result.channel)},${result.views},${result.score},${result.reason}`
+        );
+      });
+    });
+
+    const csv = rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `youtube-search-${Date.now()}.csv`;
+    a.click();
+  };
+
+  // Copy all links
+  const copyAllLinks = () => {
+    const links = allResults
+      .flatMap(s => s.results.map(r => r.url))
+      .join('\n');
+    
+    navigator.clipboard.writeText(links);
+    alert(`Copied ${allResults.flatMap(s => s.results).length} links`);
+  };
+
+  const totalResults = allResults.reduce((sum, s) => sum + s.results.length, 0);
+
+  return (
+    <div className="text-white flex flex-col gap-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <header className="flex items-center gap-3">
+        <h1 className="text-2xl md:text-3xl font-black tracking-wider">
+          <span style={{ color: '#ff0000' }}>YouTube</span>{' '}
+          <span className="text-neutral-400 font-medium">Advanced Search</span>
+        </h1>
+        <span className="text-xs text-neutral-600 ml-auto">v2 — Multi-variant, batch processing</span>
+      </header>
+
+      {/* Input Mode Selector */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setInputMode('manual')}
+          className={`px-4 py-2 rounded-lg font-medium text-sm transition ${
+            inputMode === 'manual'
+              ? 'bg-red-600 text-white'
+              : 'bg-neutral-900 text-gray-400 border border-neutral-700'
+          }`}
+        >
+          Manual Input
+        </button>
+        <button
+          onClick={() => setInputMode('excel')}
+          className={`px-4 py-2 rounded-lg font-medium text-sm transition ${
+            inputMode === 'excel'
+              ? 'bg-red-600 text-white'
+              : 'bg-neutral-900 text-gray-400 border border-neutral-700'
+          }`}
+        >
+          Excel Upload
+        </button>
+      </div>
+
+      {/* Input Section */}
+      <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-6 space-y-4">
+        {inputMode === 'manual' ? (
+          <>
+            {/* Manual Input */}
+            <div className="space-y-3">
+              {songs.map(song => (
+                <div key={song.id} className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Artist name (Arabic or English)"
+                    value={song.artist}
+                    onChange={e => updateSong(song.id, 'artist', e.target.value)}
+                    className="flex-1 px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-sm focus:border-red-500 focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Song title (Arabic or English)"
+                    value={song.song}
+                    onChange={e => updateSong(song.id, 'song', e.target.value)}
+                    className="flex-1 px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-lg text-sm focus:border-red-500 focus:outline-none"
+                  />
+                  {songs.length > 1 && (
+                    <button
+                      onClick={() => removeSong(song.id)}
+                      className="px-3 py-2 bg-red-900/30 hover:bg-red-900/50 rounded-lg transition"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={addSong}
+              className="flex items-center gap-2 px-3 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-sm transition"
+            >
+              <Plus size={16} /> Add Song
+            </button>
+          </>
+        ) : (
+          <>
+            {/* Excel Upload */}
+            <div className="border-2 border-dashed border-neutral-700 rounded-lg p-6 text-center">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                onChange={handleExcelUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex flex-col items-center gap-2 mx-auto"
+              >
+                <Upload size={32} className="text-red-500" />
+                <span className="font-medium">Click to upload Excel/CSV</span>
+                {excelFileName && <span className="text-xs text-gray-500">{excelFileName}</span>}
+              </button>
+              <p className="text-xs text-gray-600 mt-3">Format: Artist, Song (one per row)</p>
+            </div>
+          </>
+        )}
+
+        {/* Action Buttons */}
+        <div className="flex gap-2 flex-wrap pt-4 border-t border-neutral-700">
+          {!isRunning ? (
+            <button
+              onClick={startSearch}
+              className="flex items-center gap-2 px-6 py-2 bg-red-600 hover:bg-red-500 rounded-lg font-medium text-sm transition"
+            >
+              <Play size={16} /> Start Search
+            </button>
+          ) : (
+            <button
+              onClick={stopSearch}
+              className="flex items-center gap-2 px-6 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg font-medium text-sm transition"
+            >
+              <Pause size={16} /> Stop
+            </button>
+          )}
+          
+          {totalResults > 0 && (
+            <>
+              <button
+                onClick={exportCSV}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg font-medium text-sm transition"
+              >
+                <Download size={16} /> Export CSV
+              </button>
+              <button
+                onClick={copyAllLinks}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg font-medium text-sm transition"
+              >
+                <Copy size={16} /> Copy Links
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Progress Section */}
+      {isRunning && jobState && (
+        <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-6 space-y-4">
+          <div>
+            <div className="flex justify-between text-sm mb-2">
+              <span className="font-medium">Progress</span>
+              <span className="text-gray-400">{jobState.progress.percentage}%</span>
+            </div>
+            <div className="w-full h-2 bg-neutral-900 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-red-600 transition-all duration-300"
+                style={{ width: `${jobState.progress.percentage}%` }}
+              />
+            </div>
+          </div>
+
+          {jobState.progress.message && (
+            <div className="text-sm text-gray-400">
+              {jobState.progress.stage}: {jobState.progress.current}/{jobState.progress.total} — {jobState.progress.message}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Logs Panel */}
+      {logs.length > 0 && (
+        <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-4">
+          <h3 className="text-sm font-bold mb-3">Live Logs</h3>
+          <div className="h-48 bg-black rounded-lg p-3 overflow-y-auto font-mono text-xs text-green-400 space-y-1">
+            {logs.map((log, idx) => (
+              <div key={idx}>{log}</div>
+            ))}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
+      )}
+
+      {/* Results Section */}
+      {allResults.length > 0 && (
+        <div className="bg-neutral-950 border border-neutral-800 rounded-2xl overflow-hidden">
+          <div className="px-6 py-3 border-b border-neutral-800 flex items-center justify-between">
+            <span className="text-sm font-bold">
+              {allResults.length} songs × {totalResults} results
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-neutral-800 text-xs text-neutral-500 uppercase tracking-wider bg-neutral-900/50">
+                  <th className="px-4 py-3 text-left">Song</th>
+                  <th className="px-4 py-3 text-left">Title</th>
+                  <th className="px-4 py-3 text-left">Channel</th>
+                  <th className="px-4 py-3 text-right">Views</th>
+                  <th className="px-4 py-3 text-right">Score</th>
+                  <th className="px-4 py-3 text-left">Reason</th>
+                  <th className="px-4 py-3 text-center">Link</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allResults.flatMap(song =>
+                  song.results.map((result, idx) => (
+                    <tr key={`${song.song}-${idx}`} className="border-b border-neutral-800/50 hover:bg-neutral-900/30 transition">
+                      <td className="px-4 py-3 text-xs text-gray-400">
+                        <div className="font-medium text-white">{song.song}</div>
+                        <div>{song.artist}</div>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-300 max-w-xs truncate">{result.title}</td>
+                      <td className="px-4 py-3 text-xs text-gray-400">{result.channel}</td>
+                      <td className="px-4 py-3 text-xs text-right text-gray-400">
+                        {result.views > 1000000 ? `${(result.views / 1000000).toFixed(1)}M` : 
+                         result.views > 1000 ? `${(result.views / 1000).toFixed(1)}K` :
+                         result.views}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-right font-bold">
+                        <span className={
+                          result.score >= 85 ? 'text-green-400' :
+                          result.score >= 70 ? 'text-yellow-400' :
+                          'text-red-400'
+                        }>
+                          {result.score}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{result.reason}</td>
+                      <td className="px-4 py-3 text-center">
+                        <a
+                          href={result.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-red-400 hover:text-red-300 transition"
+                        >
+                          🔗
+                        </a>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!isRunning && allResults.length === 0 && logs.length === 0 && (
+        <div className="flex flex-col items-center justify-center text-neutral-600 gap-3 py-20">
+          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+          </svg>
+          <p className="text-sm">Enter songs and click "Start Search" to begin</p>
+          <p className="text-xs text-neutral-700">Results will appear here with scoring and channel info</p>
+        </div>
+      )}
+    </div>
+  );
+}
