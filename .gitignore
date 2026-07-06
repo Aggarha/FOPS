@@ -6,6 +6,18 @@ __pycache__/
 uploads/
 node_modules/
 .env
+cache/
+config.json
+frontend/*.tsbuildinfo
+*.tsbuildinfo
+.cache/
+tmp/
+temp/
+run/
+runtime/
+*.pid
+*.bak
+*.swp
 
 # Additional safety ignores
 .env.*
